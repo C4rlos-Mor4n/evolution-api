@@ -1,6 +1,6 @@
 services:
   evolution-api:
-    image: evoapicloud/evolution-api:latest
+    image: evolution-api:latest
     restart: always
     volumes:
       - evolution-instances:/evolution/instances
