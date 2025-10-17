@@ -1,79 +1,34 @@
 version: "3.8"
 
-networks:
-  evolution-net:
-    driver: overlay
-  dokploy-network:
-    external: true
-
-volumes:
-  evolution_instances:
-  evolution_redis:
-  postgres_data:
-
 services:
-  api:
-    image: evoapicloud/evolution-api:latest
+  evolution-api:
+    image: docker.io/c4rlosmor4n/evolution-api:latest   # usa tu imagen personalizada (puede ser construida por Dokploy)
     restart: always
     depends_on:
       - redis
       - evolution-postgres
-    # Si usarás Traefik, comenta los ports y exponlo solo por la red.
     ports:
-      - "127.0.0.1:8080:8080"
-    expose:
-      - "8080"
+      - "8080:8080"
     volumes:
-      - evolution_instances:/evolution/instances
+      - evolution-instances:/evolution/instances
     networks:
       - evolution-net
       - dokploy-network
     env_file:
       - .env
-    environment:
-      # ====== Variables que pediste (vendrán desde .env) ======
-      SERVER_URL: ${SERVER_URL}
-      AUTHENTICATION_TYPE: ${AUTHENTICATION_TYPE}
-      AUTHENTICATION_API_KEY: ${AUTHENTICATION_API_KEY}
-      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: ${AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES}
-      LANGUAGE: ${LANGUAGE}
-      CONFIG_SESSION_PHONE_CLIENT: ${CONFIG_SESSION_PHONE_CLIENT}
-      CONFIG_SESSION_PHONE_NAME: ${CONFIG_SESSION_PHONE_NAME}
-      TELEMETRY: ${TELEMETRY}
-      TELEMETRY_URL: ${TELEMETRY_URL}
-      DATABASE_ENABLED: ${DATABASE_ENABLED}
-      DATABASE_PROVIDER: ${DATABASE_PROVIDER}
-      DATABASE_CONNECTION_URI: ${DATABASE_CONNECTION_URI}
-      DATABASE_SAVE_DATA_INSTANCE: ${DATABASE_SAVE_DATA_INSTANCE}
-      DATABASE_SAVE_DATA_NEW_MESSAGE: ${DATABASE_SAVE_DATA_NEW_MESSAGE}
-      DATABASE_SAVE_MESSAGE_UPDATE: ${DATABASE_SAVE_MESSAGE_UPDATE}
-      DATABASE_SAVE_DATA_CONTACTS: ${DATABASE_SAVE_DATA_CONTACTS}
-      DATABASE_SAVE_DATA_CHATS: ${DATABASE_SAVE_DATA_CHATS}
-      DATABASE_SAVE_DATA_LABELS: ${DATABASE_SAVE_DATA_LABELS}
-      DATABASE_SAVE_DATA_HISTORIC: ${DATABASE_SAVE_DATA_HISTORIC}
-      CACHE_REDIS_ENABLED: ${CACHE_REDIS_ENABLED}
-      CACHE_REDIS_URI: ${CACHE_REDIS_URI}
-      CACHE_REDIS_PREFIX_KEY: ${CACHE_REDIS_PREFIX_KEY}
-      CACHE_REDIS_SAVE_INSTANCES: ${CACHE_REDIS_SAVE_INSTANCES}
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
     deploy:
       mode: replicated
-      replicas: 1               # pon 2 si quieres HA sin downtime
+      replicas: 1
       restart_policy:
         condition: any
-      update_config:
-        order: start-first
-        parallelism: 1
       placement:
         constraints:
-          - node.role == worker  # evita saturar el manager
+          - node.role == worker
+    expose:
+      - "8080"
 
-  frontend:
-    image: evoapicloud/evolution-manager:latest
+  evolution-frontend:
+    image: docker.io/c4rlosmor4n/evolution-manager:latest
     restart: always
     ports:
       - "3000:80"
@@ -94,12 +49,14 @@ services:
     command: >
       redis-server --port 6379 --appendonly yes
     volumes:
-      - evolution_redis:/data
+      - evolution-redis:/data
     networks:
       evolution-net:
-        aliases: [evolution-redis]
+        aliases:
+          - evolution-redis
       dokploy-network:
-        aliases: [evolution-redis]
+        aliases:
+          - evolution-redis
     expose:
       - "6379"
     deploy:
@@ -112,7 +69,7 @@ services:
           - node.role == worker
 
   evolution-postgres:
-    image: postgres:15
+    image: postgres:16-alpine
     restart: always
     env_file:
       - .env
@@ -123,11 +80,11 @@ services:
       - -c
       - listen_addresses=*
     environment:
-      POSTGRES_DB: ${POSTGRES_DATABASE}
-      POSTGRES_USER: ${POSTGRES_USERNAME}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DATABASE}
+      - POSTGRES_USER=${POSTGRES_USERNAME}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - evolution-postgres-data:/var/lib/postgresql/data
     networks:
       - evolution-net
       - dokploy-network
@@ -141,3 +98,14 @@ services:
       placement:
         constraints:
           - node.role == worker
+
+volumes:
+  evolution-instances:
+  evolution-redis:
+  evolution-postgres-data:
+
+networks:
+  evolution-net:
+    driver: overlay
+  dokploy-network:
+    external: true
