@@ -6,21 +6,29 @@ Base:
 - upstream: evolution-foundation/evolution-api
 - version: v2.3.7 (git tag `2.3.7`, commit `cd800f2976e1e5b682fbf86a01ee4d85ae61f370`)
 
-Custom version:
-- 2.3.7-meta.1
+Custom versions:
+- 2.3.7-meta.1 — status webhooks (commit `831a8db4d49177063d883d9f3f23336fd8e1d178`)
+- 2.3.7-meta.2 — meta.1 + media with presigned URLs + always emit status updates + markMessageAsRead (#2741)
 
-Fixes:
+Fixes (meta.1):
 - safe handling of Meta contacts without profile.name
 - continue processing status batches when an individual wamid cannot be resolved
+
+Fixes (meta.2):
+- media (image/PDF/video) sent by URL with a query string (e.g. S3 presigned `?X-Amz-...`) no longer fails
+- MESSAGES_UPDATE is emitted even when the wamid is not stored in this instance's DB
+- `POST /chat/markMessageAsRead/:instance` works on WHATSAPP-BUSINESS instances (upstream PR #2741)
 
 Upstream references:
 - #2514 (contact guard, only the `pushName`/`contacts[0]` part is applied)
 - #2573 (issue: MESSAGES_UPDATE lost on Cloud API status webhooks)
 - #2715 (return -> continue inside the statuses loop; still open upstream)
+- #2741 (markMessageAsRead for Cloud API; open upstream, applied verbatim)
 
 Scope:
 - Meta WhatsApp Business / Cloud API only
-- File: `src/api/integrations/channel/meta/whatsapp.business.service.ts` (`messageHandle`)
+- File: `src/api/integrations/channel/meta/whatsapp.business.service.ts`
+  (`messageHandle`, `prepareMediaMessage`, `sendMessageWithTyping`, `markMessageAsRead`)
 
 Not included:
 - develop branch
@@ -43,6 +51,28 @@ Not included:
    un error puntual (DB, `axios.post` al `webhookUrl` del mensaje, status malformado) se loguea
    (id + status + mensaje de error, sin payload ni tokens) y se continúa con el siguiente.
 
+### meta.2
+
+5. `prepareMediaMessage` (URL): el mimetype se resolvía con `mimeTypes.lookup(urlCompleta)`; con query
+   string (`archivo.pdf?X-Amz-...`) devuelve `false`. Ahora el orden es:
+   `mimetype` del payload → extensión del **pathname** de la URL → extensión de `fileName` →
+   `application/octet-stream`. Para `document` sin `fileName`, el nombre se deduce del pathname
+   (fallback `document` en vez de crash por `arrayMatch[1]` nulo).
+6. `sendMessageWithTyping`: `message['mimetype']?.startsWith(...)` lanzaba
+   `startsWith is not a function` cuando el mimetype era `false` → 400. Ahora comprueba `typeof === 'string'`.
+7. Loop de `statuses`: si el `wamid` no existe en la tabla `Message` de esta instancia, igual se emite
+   `MESSAGES_UPDATE` (`keyId`, `remoteJid`, `fromMe`, `participant`, `status`, `instanceId`; **sin
+   `messageId`**) y no se persiste en `MessageUpdate` (la FK a `Message` lo impide).
+   **Cambio de comportamiento deliberado**: antes esos estados se descartaban en silencio. Consumidores
+   que emparejan por `keyId` (wamid) ahora los reciben; los que dependían de `messageId` deben tolerar que falte.
+8. `markMessageAsRead` (PR #2741, sin cambios): antes respondía 400 "Method not available". Ahora envía
+   `{ messaging_product: 'whatsapp', status: 'read', message_id: <wamid> }` a
+   `{WA_BUSINESS_URL}/{VERSION}/{number}/messages` por cada `readMessages[].id` y responde
+   `{ message: 'Messages marked as read', read: 'success' }`. Errores de Meta → 400 con el mensaje de Meta.
+
+No cambiado: audio por URL (`audioWhatsapp`) sigue usando `mimeTypes.lookup(url)`; no rompe el envío
+(el mimetype no se usa al construir el payload de audio).
+
 El mapeo de estados no cambia: `item.status.toUpperCase()` → `SENT` / `DELIVERED` / `READ` / `FAILED`
 en `MESSAGES_UPDATE` (contrato público de 2.3.7 intacto).
 
@@ -57,21 +87,23 @@ en `MESSAGES_UPDATE` (contrato público de 2.3.7 intacto).
 
 ## Tests
 
-`test/meta-statuses.test.ts` (node:test vía tsx; `/test/` está en `.gitignore` upstream, se agregó con `git add -f`):
+`test/meta-statuses.test.ts` (14 tests; node:test vía tsx; `/test/` está en `.gitignore` upstream, se agregó con `git add -f`):
 
 ```bash
 npx tsx --test test/meta-statuses.test.ts
 ```
 
-Contra 2.3.7 sin parche: 4 de 6 fallan (TEST 1, 3, 4 y batch con error). Con el parche: 6/6 pasan.
+- meta.1: contra 2.3.7 sin parche, 4 de 6 fallan (TEST 1, 3, 4 y batch con error). Con el parche: 6/6.
+- meta.2: contra el código de meta.1, 9 de 14 fallan (media, markMessageAsRead, emisión de wamid desconocido). Con el parche: 14/14.
 
 ## Trazabilidad
 
 Docker image:
 - PENDING (bloqueado: registry/credenciales no provistas)
 
-Git commit (fix):
-- ver `git log krionix/meta-2.3.7` (commit `fix(meta): restore Cloud API message status processing`)
+Git commits:
+- meta.1: `831a8db4d49177063d883d9f3f23336fd8e1d178`
+- meta.2: ver `git log krionix/meta-2.3.7` (commit `fix(meta): presigned media URLs, always emit status updates, markMessageAsRead`)
 
 Docker digest:
 - PENDING
