@@ -98,12 +98,20 @@ npx tsx --test test/meta-statuses.test.ts
 
 ## Trazabilidad
 
-Docker image:
-- PENDING (bloqueado: registry/credenciales no provistas)
+Fork / código:
+- https://github.com/C4rlos-Mor4n/evolution-api (rama `krionix/meta-2.3.7`)
+- tags git: `2.3.7-meta.1` → `831a8db4d49177063d883d9f3f23336fd8e1d178`, `2.3.7-meta.2` → `f691be7996301440c26937f9aa6b3fe02910d569`
 
-Git commits:
-- meta.1: `831a8db4d49177063d883d9f3f23336fd8e1d178`
-- meta.2: ver `git log krionix/meta-2.3.7` (commit `fix(meta): presigned media URLs, always emit status updates, markMessageAsRead`)
+Docker image (Docker Hub, pública, linux/amd64):
+- `docker.io/c4rlosmor4n/evolution-api:2.3.7-meta.2` (inmutable)
+- `docker.io/c4rlosmor4n/evolution-api:2.3.7-meta` (alias de la línea meta 2.3.7)
+- meta.1 no se publicó (solo build local); meta.2 la reemplaza.
 
-Docker digest:
-- PENDING
+Docker digest (2.3.7-meta.2):
+- `sha256:59df8ffb4da4e0b604538a6467ad6b1f0f2fb58e2f82a7def3e4db4a5d351826`
+
+Para producción, fijar por digest:
+
+```yaml
+image: docker.io/c4rlosmor4n/evolution-api:2.3.7-meta.2@sha256:59df8ffb4da4e0b604538a6467ad6b1f0f2fb58e2f82a7def3e4db4a5d351826
+```
