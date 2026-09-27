@@ -386,8 +386,12 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       let messageRaw: any;
       let pushName: any;
+      // Meta may send contacts without `profile` (e.g. on status webhooks); see upstream #2514 / #2573
+      const incomingContact = received?.contacts?.[0];
 
-      if (received.contacts) pushName = received.contacts[0].profile.name;
+      if (incomingContact) {
+        pushName = incomingContact?.profile?.name ?? incomingContact?.name ?? incomingContact?.wa_id ?? undefined;
+      }
 
       if (received.messages) {
         const message = received.messages[0]; // Añadir esta línea para definir message
@@ -702,7 +706,7 @@ export class BusinessStartupService extends ChannelStartupService {
         });
 
         const contactRaw: any = {
-          remoteJid: received.contacts[0].profile.phone,
+          remoteJid: incomingContact?.profile?.phone,
           pushName,
           // profilePicUrl: '',
           instanceId: this.instanceId,
@@ -714,7 +718,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
         if (contact) {
           const contactRaw: any = {
-            remoteJid: received.contacts[0].profile.phone,
+            remoteJid: incomingContact?.profile?.phone,
             pushName,
             // profilePicUrl: '',
             instanceId: this.instanceId,
@@ -745,31 +749,57 @@ export class BusinessStartupService extends ChannelStartupService {
       }
       if (received.statuses) {
         for await (const item of received.statuses) {
-          const key = {
-            id: item.id,
-            remoteJid: this.phoneNumber,
-            fromMe: this.phoneNumber === received.metadata.phone_number_id,
-          };
-          if (settings?.groups_ignore && key.remoteJid.includes('@g.us')) {
-            return;
-          }
-          if (key.remoteJid !== 'status@broadcast' && !key?.remoteJid?.match(/(:\d+)/)) {
-            const findMessage = await this.prismaRepository.message.findFirst({
-              where: {
-                instanceId: this.instanceId,
-                key: {
-                  path: ['id'],
-                  equals: key.id,
-                },
-              },
-            });
-
-            if (!findMessage) {
-              return;
+          try {
+            const key = {
+              id: item.id,
+              remoteJid: this.phoneNumber,
+              fromMe: this.phoneNumber === received.metadata.phone_number_id,
+            };
+            if (settings?.groups_ignore && key.remoteJid.includes('@g.us')) {
+              continue;
             }
+            if (key.remoteJid !== 'status@broadcast' && !key?.remoteJid?.match(/(:\d+)/)) {
+              const findMessage = await this.prismaRepository.message.findFirst({
+                where: {
+                  instanceId: this.instanceId,
+                  key: {
+                    path: ['id'],
+                    equals: key.id,
+                  },
+                },
+              });
 
-            if (item.message === null && item.status === undefined) {
-              this.sendDataWebhook(Events.MESSAGES_DELETE, key);
+              if (!findMessage) {
+                continue;
+              }
+
+              if (item.message === null && item.status === undefined) {
+                this.sendDataWebhook(Events.MESSAGES_DELETE, key);
+
+                const message: any = {
+                  messageId: findMessage.id,
+                  keyId: key.id,
+                  remoteJid: key.remoteJid,
+                  fromMe: key.fromMe,
+                  participant: key?.remoteJid,
+                  status: 'DELETED',
+                  instanceId: this.instanceId,
+                };
+
+                await this.prismaRepository.messageUpdate.create({
+                  data: message,
+                });
+
+                if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+                  this.chatwootService.eventWhatsapp(
+                    Events.MESSAGES_DELETE,
+                    { instanceName: this.instance.name, instanceId: this.instanceId },
+                    { key: key },
+                  );
+                }
+
+                continue;
+              }
 
               const message: any = {
                 messageId: findMessage.id,
@@ -777,44 +807,23 @@ export class BusinessStartupService extends ChannelStartupService {
                 remoteJid: key.remoteJid,
                 fromMe: key.fromMe,
                 participant: key?.remoteJid,
-                status: 'DELETED',
+                status: item.status.toUpperCase(),
                 instanceId: this.instanceId,
               };
+
+              this.sendDataWebhook(Events.MESSAGES_UPDATE, message);
 
               await this.prismaRepository.messageUpdate.create({
                 data: message,
               });
 
-              if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
-                this.chatwootService.eventWhatsapp(
-                  Events.MESSAGES_DELETE,
-                  { instanceName: this.instance.name, instanceId: this.instanceId },
-                  { key: key },
-                );
+              if (findMessage.webhookUrl) {
+                await axios.post(findMessage.webhookUrl, message);
               }
-
-              return;
             }
-
-            const message: any = {
-              messageId: findMessage.id,
-              keyId: key.id,
-              remoteJid: key.remoteJid,
-              fromMe: key.fromMe,
-              participant: key?.remoteJid,
-              status: item.status.toUpperCase(),
-              instanceId: this.instanceId,
-            };
-
-            this.sendDataWebhook(Events.MESSAGES_UPDATE, message);
-
-            await this.prismaRepository.messageUpdate.create({
-              data: message,
-            });
-
-            if (findMessage.webhookUrl) {
-              await axios.post(findMessage.webhookUrl, message);
-            }
+          } catch (error) {
+            // A failing status must not prevent the remaining statuses of the same webhook from being processed
+            this.logger.error(['Error processing Cloud API status', item?.id, item?.status, error?.message]);
           }
         }
       }
