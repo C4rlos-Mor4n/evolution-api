@@ -1755,8 +1755,24 @@ export class BaileysStartupService extends ChannelStartupService {
             continue;
           }
 
-          if (findMessage && update.status !== undefined && status[update.status] !== findMessage.status) {
-            if (!key.fromMe && key.remoteJid) {
+          const updateStatus = status[update.status] ?? 'SERVER_ACK';
+
+          if (findMessage && update.status !== undefined) {
+            if (key.fromMe && updateStatus === 'ERROR') {
+              await this.prismaRepository.message.update({
+                where: { id: findMessage.id },
+                data: { status: updateStatus },
+              });
+
+              if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+                await this.chatwootService.markMessageAsFailed(findMessage, {
+                  status: updateStatus,
+                  code: update.messageStubParameters?.[0],
+                  keyId: key.id ?? undefined,
+                  remoteJid: key.remoteJid ?? undefined,
+                });
+              }
+            } else if (!key.fromMe && key.remoteJid && updateStatus !== findMessage.status) {
               readChatToUpdate[key.remoteJid] = true;
 
               const { remoteJid } = key;
@@ -1775,7 +1791,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
                 await this.prismaRepository.message.update({
                   where: { id: findMessage.id },
-                  data: { status: status[update.status] },
+                  data: { status: updateStatus },
                 });
               } else {
                 this.logger.info(
