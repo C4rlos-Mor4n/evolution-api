@@ -807,7 +807,7 @@ export class ConfigService {
         COLOR: process.env.QRCODE_COLOR || '#198754',
       },
       EVOLUTIONBOT: {
-        ENABLED: process.env?.EVOLUTIONBOT_ENABLED === 'true',
+        ENABLED: process.env?.EVOLUTIONBOT_ENABLED !== 'false',
       },
       TYPEBOT: {
         ENABLED: process.env?.TYPEBOT_ENABLED === 'true',
