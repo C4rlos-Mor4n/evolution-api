@@ -544,6 +544,15 @@ export class BaileysStartupService extends ChannelStartupService {
         return undefined;
       }
 
+      // Baileys answers retry receipts with whatever getMessage returns. A message revoked with
+      // "delete for everyone" keeps its content in the Message table, so returning it here makes
+      // the deleted text reappear for the members whose devices ask for a retry.
+      if (await this.isMessageDeleted(key.id, webMessageInfo[0])) {
+        this.logger.verbose(`getMessage: message ${key.id} was deleted, skipping retry resend`);
+
+        return undefined;
+      }
+
       if (message.pollCreationMessage) {
         const messageSecretBase64 = message.messageContextInfo?.messageSecret;
 
@@ -565,6 +574,27 @@ export class BaileysStartupService extends ChannelStartupService {
 
       return undefined;
     }
+  }
+
+  // deleteMessage marks the row (status/key.deleted); both it and the messages.update revoke record a
+  // 'DELETED' MessageUpdate. The row lookup in deleteMessage is not scoped to the instance, so in a group
+  // shared by several instances the mark can land on another instance's copy; matching the MessageUpdate
+  // by instance + key id still finds it.
+  private async isMessageDeleted(keyId: string, row: any): Promise<boolean> {
+    if (!row) {
+      return false;
+    }
+
+    if (row.status === 'DELETED' || row.key?.deleted === true) {
+      return true;
+    }
+
+    const deletion = await this.prismaRepository.messageUpdate.findFirst({
+      where: { instanceId: this.instanceId, keyId, status: 'DELETED' },
+      select: { id: true },
+    });
+
+    return !!deletion;
   }
 
   private async defineAuthState() {
@@ -1672,8 +1702,9 @@ export class BaileysStartupService extends ChannelStartupService {
           if (update.message === null && update.status === undefined) {
             this.sendDataWebhook(Events.MESSAGES_DELETE, { ...key, status: 'DELETED' });
 
+            // Recorded as DELETED (not the SERVER_ACK fallback) so getMessage can refuse to resend it.
             if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE)
-              await this.prismaRepository.messageUpdate.create({ data: message });
+              await this.prismaRepository.messageUpdate.create({ data: { ...message, status: 'DELETED' } });
 
             if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
               this.chatwootService.eventWhatsapp(
