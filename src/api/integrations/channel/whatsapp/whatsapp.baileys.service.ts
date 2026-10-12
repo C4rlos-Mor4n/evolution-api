@@ -1021,7 +1021,7 @@ export class BaileysStartupService extends ChannelStartupService {
           }
         }
 
-        const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
+        const chatsRaw: { remoteJid: string; instanceId: string; name?: string; unreadMessages?: number }[] = [];
         const chatsRepository = new Set(
           (await this.prismaRepository.chat.findMany({ where: { instanceId: this.instanceId } })).map(
             (chat) => chat.remoteJid,
@@ -1033,7 +1033,12 @@ export class BaileysStartupService extends ChannelStartupService {
             continue;
           }
 
-          chatsRaw.push({ remoteJid: chat.id, instanceId: this.instanceId, name: chat.name });
+          chatsRaw.push({
+            remoteJid: chat.id,
+            instanceId: this.instanceId,
+            name: chat.name,
+            unreadMessages: chat.unreadCount ?? 0,
+          });
         }
 
         this.sendDataWebhook(Events.CHATS_SET, chatsRaw);
