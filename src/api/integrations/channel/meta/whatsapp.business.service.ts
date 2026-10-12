@@ -131,13 +131,32 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       this.loadChatwoot();
 
-      this.eventHandler(content);
+      // Kept for compatibility only. The remoteJid of each message/status is derived from the event itself:
+      // this field is shared by concurrent webhooks and was read after an await, so messages could be
+      // attributed to another contact's chat.
+      this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses?.[0]?.recipient_id);
 
-      this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id);
+      await this.eventHandler(content);
     } catch (error) {
       this.logger.error(error);
       throw new InternalServerErrorException(error?.toString());
     }
+  }
+
+  private normalizePhoneNumber(value: unknown) {
+    return typeof value === 'string' || typeof value === 'number' ? String(value).replace(/\D/g, '') : '';
+  }
+
+  // Statuses are delivery receipts for messages we sent, unless the recipient is our own number
+  // (from upstream develop, #2514).
+  private isCloudApiStatusFromMe(item: any, received: any) {
+    const recipient = this.normalizePhoneNumber(item?.recipient_id);
+    if (!recipient) return true;
+
+    const displayPhone = this.normalizePhoneNumber(received?.metadata?.display_phone_number);
+    const phoneNumberId = this.normalizePhoneNumber(received?.metadata?.phone_number_id);
+
+    return recipient !== displayPhone && recipient !== phoneNumberId;
   }
 
   private async downloadMediaMessage(message: any) {
@@ -398,7 +417,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
         const key = {
           id: message.id,
-          remoteJid: this.phoneNumber,
+          remoteJid: createJid(message.from),
           fromMe: message.from === received.metadata.phone_number_id,
         };
 
@@ -735,7 +754,7 @@ export class BusinessStartupService extends ChannelStartupService {
           }
 
           await this.prismaRepository.contact.updateMany({
-            where: { remoteJid: contact.remoteJid },
+            where: { instanceId: this.instanceId, remoteJid: contact.remoteJid },
             data: contactRaw,
           });
           return;
@@ -752,8 +771,8 @@ export class BusinessStartupService extends ChannelStartupService {
           try {
             const key = {
               id: item.id,
-              remoteJid: this.phoneNumber,
-              fromMe: this.phoneNumber === received.metadata.phone_number_id,
+              remoteJid: item?.recipient_id ? createJid(item.recipient_id) : this.phoneNumber,
+              fromMe: this.isCloudApiStatusFromMe(item, received),
             };
             if (settings?.groups_ignore && key.remoteJid.includes('@g.us')) {
               continue;
@@ -780,6 +799,7 @@ export class BusinessStartupService extends ChannelStartupService {
                     participant: key?.remoteJid,
                     status: String(item.status).toUpperCase(),
                     instanceId: this.instanceId,
+                    ...(Array.isArray(item.errors) && item.errors.length > 0 ? { errors: item.errors } : {}),
                   });
                 }
                 continue;
@@ -823,7 +843,12 @@ export class BusinessStartupService extends ChannelStartupService {
                 instanceId: this.instanceId,
               };
 
-              this.sendDataWebhook(Events.MESSAGES_UPDATE, message);
+              const errors = Array.isArray(item.errors) && item.errors.length > 0 ? item.errors : undefined;
+              if (errors) {
+                this.logger.warn(['Cloud API status with errors', key.id, item.status, JSON.stringify(errors)]);
+              }
+
+              this.sendDataWebhook(Events.MESSAGES_UPDATE, errors ? { ...message, errors } : message);
 
               await this.prismaRepository.messageUpdate.create({
                 data: message,
@@ -923,34 +948,51 @@ export class BusinessStartupService extends ChannelStartupService {
       const database = this.configService.get<Database>('DATABASE');
       const settings = await this.findSettings();
 
-      // Si hay mensajes, verificar primero el tipo
-      if (content.messages && content.messages.length > 0) {
-        const message = content.messages[0];
-        this.logger.log(`Tipo de mensaje recibido: ${message.type}`);
+      const supportedTypes = [
+        'text',
+        'image',
+        'video',
+        'audio',
+        'document',
+        'sticker',
+        'location',
+        'contacts',
+        'interactive',
+        'button',
+        'reaction',
+      ];
 
-        // Verificamos el tipo de mensaje antes de procesarlo
-        if (
-          message.type === 'text' ||
-          message.type === 'image' ||
-          message.type === 'video' ||
-          message.type === 'audio' ||
-          message.type === 'document' ||
-          message.type === 'sticker' ||
-          message.type === 'location' ||
-          message.type === 'contacts' ||
-          message.type === 'interactive' ||
-          message.type === 'button' ||
-          message.type === 'reaction'
-        ) {
-          // Procesar el mensaje normalmente
-          this.messageHandle(content, database, settings);
-        } else {
-          this.logger.warn(`Tipo de mensaje no reconocido: ${message.type}`);
+      // Meta can batch several messages in one change: process each one (2.3.7 only read messages[0]),
+      // with the contact that matches its sender so pushName is not taken from another contact.
+      if (content.messages && content.messages.length > 0) {
+        for (const message of content.messages) {
+          this.logger.log(`Tipo de mensaje recibido: ${message.type}`);
+
+          if (!supportedTypes.includes(message.type)) {
+            this.logger.warn(`Tipo de mensaje no reconocido: ${message.type}`);
+            continue;
+          }
+
+          const contact = content.contacts?.find((item: any) => item?.wa_id === message.from);
+
+          await this.messageHandle(
+            {
+              ...content,
+              messages: [message],
+              contacts: contact ? [contact] : content.contacts,
+              statuses: undefined,
+            },
+            database,
+            settings,
+          );
         }
-      } else if (content.statuses) {
-        // Procesar actualizaciones de estado
-        this.messageHandle(content, database, settings);
-      } else {
+      }
+
+      if (content.statuses) {
+        await this.messageHandle({ ...content, messages: undefined }, database, settings);
+      }
+
+      if (!content.messages?.length && !content.statuses) {
         this.logger.warn('No se encontraron mensajes ni estados en el contenido recibido');
       }
     } catch (error) {

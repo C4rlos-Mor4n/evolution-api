@@ -245,3 +245,99 @@ describe('Meta Cloud API markMessageAsRead (upstream #2741)', () => {
     await assert.rejects(svc.markMessageAsRead({ readMessages: [] }), badRequest(/at least one/));
   });
 });
+
+describe('Meta Cloud API concurrency and batches (community port)', () => {
+  // Stubs messageHandle side effects: captures the messageRaw logged right before telemetry/chatbot/DB work
+  const buildInbound = () => {
+    const t = buildService();
+    const raws: any[] = [];
+    Object.defineProperty(t.svc, 'localSettings', { value: {} });
+    t.svc.loadChatwoot = () => {};
+    t.svc.findSettings = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5)); // force interleaving between webhooks
+      return {};
+    };
+    t.svc.logger = {
+      error: () => {},
+      warn: () => {},
+      log: (value: any) => {
+        if (value?.key) {
+          raws.push(value);
+          throw new Error('stop-after-messageRaw');
+        }
+      },
+    };
+    return { t, raws };
+  };
+
+  const inbound = (from: string, id: string, name: string) => ({
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              metadata: { phone_number_id: PHONE_NUMBER_ID },
+              contacts: [{ profile: { name }, wa_id: from }],
+              messages: [{ id, from, timestamp: '1', type: 'reaction', reaction: {} }],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it('concurrent webhooks keep each message in its own chat (no shared phoneNumber race)', async () => {
+    const { t, raws } = buildInbound();
+    await Promise.all([
+      t.svc.connectToWhatsapp(inbound('593900000001', 'wamid.A', 'Ana')),
+      t.svc.connectToWhatsapp(inbound('593900000002', 'wamid.B', 'Beto')),
+    ]);
+    const byId = Object.fromEntries(raws.map((r) => [r.key.id, r]));
+    assert.equal(byId['wamid.A'].key.remoteJid, '593900000001@s.whatsapp.net');
+    assert.equal(byId['wamid.A'].pushName, 'Ana');
+    assert.equal(byId['wamid.B'].key.remoteJid, '593900000002@s.whatsapp.net');
+    assert.equal(byId['wamid.B'].pushName, 'Beto');
+  });
+
+  it('processes every message of a batch with its own contact', async () => {
+    const { t, raws } = buildInbound();
+    await t.svc.eventHandler({
+      metadata: { phone_number_id: PHONE_NUMBER_ID },
+      contacts: [
+        { profile: { name: 'Ana' }, wa_id: '593900000001' },
+        { profile: { name: 'Beto' }, wa_id: '593900000002' },
+      ],
+      messages: [
+        { id: 'wamid.1', from: '593900000001', timestamp: '1', type: 'reaction', reaction: {} },
+        { id: 'wamid.2', from: '593900000002', timestamp: '1', type: 'reaction', reaction: {} },
+      ],
+    });
+    assert.deepEqual(
+      raws.map((r) => [r.key.id, r.key.remoteJid, r.pushName]),
+      [
+        ['wamid.1', '593900000001@s.whatsapp.net', 'Ana'],
+        ['wamid.2', '593900000002@s.whatsapp.net', 'Beto'],
+      ],
+    );
+  });
+
+  it('status uses recipient_id as remoteJid, fromMe=true, and forwards Meta errors on FAILED', async () => {
+    const t = buildService();
+    await t.handle({
+      metadata: { phone_number_id: PHONE_NUMBER_ID, display_phone_number: '593222222222' },
+      statuses: [
+        {
+          id: 'wamid.KNOWN',
+          status: 'failed',
+          recipient_id: '593999999999',
+          errors: [{ code: 131047, title: 'Re-engagement message' }],
+        },
+      ],
+    });
+    const [update] = statusUpdates(t.webhooks);
+    assert.equal(update.remoteJid, '593999999999@s.whatsapp.net');
+    assert.equal(update.fromMe, true);
+    assert.equal(update.errors?.[0]?.code, 131047);
+    assert.equal(t.updates[0].errors, undefined, 'errors are not persisted (no column)');
+  });
+});
