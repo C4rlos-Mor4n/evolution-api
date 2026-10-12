@@ -2,6 +2,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { configService, Kafka, Log } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventEnabled, isEventInList } from '@utils/eventAliases';
 import { Consumer, ConsumerConfig, Kafka as KafkaJS, KafkaConfig, Producer, ProducerConfig } from 'kafkajs';
 
 import { EmitData, EventController, EventControllerInterface } from '../event.controller';
@@ -299,7 +300,7 @@ export class KafkaController extends EventController implements EventControllerI
     const messageValue = JSON.stringify(message);
 
     // Instance-specific events
-    if (instanceKafka?.enabled && this.producer && Array.isArray(kafkaLocal) && kafkaLocal.includes(we)) {
+    if (instanceKafka?.enabled && this.producer && isEventInList(kafkaLocal, we)) {
       const topicName = this.getTopicName(event, false, instanceName);
 
       let retry = 0;
@@ -345,7 +346,7 @@ export class KafkaController extends EventController implements EventControllerI
     }
 
     // Global events
-    if (kafkaGlobal && kafkaEvents[we] && this.producer) {
+    if (kafkaGlobal && isEventEnabled(kafkaEvents, we) && this.producer) {
       const topicName = this.getTopicName(event, true);
 
       let retry = 0;

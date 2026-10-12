@@ -2,6 +2,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { Auth, configService, Cors, Log, Websocket } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventInList } from '@utils/eventAliases';
 import { Server } from 'http';
 import { Server as SocketIO } from 'socket.io';
 
@@ -156,7 +157,7 @@ export class WebsocketController extends EventController implements EventControl
         return;
       }
 
-      if (Array.isArray(instance?.events) && instance?.events.includes(configEv)) {
+      if (isEventInList(instance?.events, configEv)) {
         this.socket.of(`/${instanceName}`).emit(event, message);
 
         if (logEnabled) {

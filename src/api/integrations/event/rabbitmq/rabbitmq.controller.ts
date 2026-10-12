@@ -2,6 +2,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { configService, Log, Rabbitmq } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventEnabled, isEventInList } from '@utils/eventAliases';
 import * as amqp from 'amqplib/callback_api';
 
 import { EmitData, EventController, EventControllerInterface } from '../event.controller';
@@ -245,7 +246,7 @@ export class RabbitmqController extends EventController implements EventControll
     };
 
     if (instanceRabbitmq?.enabled && this.amqpChannel) {
-      if (Array.isArray(rabbitmqLocal) && rabbitmqLocal.includes(we)) {
+      if (isEventInList(rabbitmqLocal, we)) {
         const exchangeName = instanceName ?? rabbitmqExchangeName;
 
         let retry = 0;
@@ -298,7 +299,7 @@ export class RabbitmqController extends EventController implements EventControll
       }
     }
 
-    if (rabbitmqGlobal && rabbitmqEvents[we] && this.amqpChannel) {
+    if (rabbitmqGlobal && isEventEnabled(rabbitmqEvents, we) && this.amqpChannel) {
       const exchangeName = rabbitmqExchangeName;
 
       let retry = 0;

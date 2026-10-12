@@ -2,6 +2,7 @@ import { PrismaRepository } from '@api/repository/repository.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { configService, Log, Nats } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventEnabled, isEventInList } from '@utils/eventAliases';
 import { connect, NatsConnection, StringCodec } from 'nats';
 
 import { EmitData, EventController, EventControllerInterface } from '../event.controller';
@@ -78,7 +79,7 @@ export class NatsController extends EventController implements EventControllerIn
 
     // Instância específica
     if (instanceNats?.enabled) {
-      if (Array.isArray(natsLocal) && natsLocal.includes(we)) {
+      if (isEventInList(natsLocal, we)) {
         const subject = `${instanceName}.${event.toLowerCase()}`;
 
         try {
@@ -98,7 +99,7 @@ export class NatsController extends EventController implements EventControllerIn
     }
 
     // Global
-    if (natsGlobal && natsEvents[we]) {
+    if (natsGlobal && isEventEnabled(natsEvents, we)) {
       try {
         const subject = prefixKey ? `${prefixKey}.${event.toLowerCase()}` : event.toLowerCase();
 

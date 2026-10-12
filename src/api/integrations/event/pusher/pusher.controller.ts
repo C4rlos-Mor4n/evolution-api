@@ -4,6 +4,7 @@ import { WAMonitoringService } from '@api/services/monitor.service';
 import { wa } from '@api/types/wa.types';
 import { configService, Log, Pusher as ConfigPusher } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventEnabled, isEventInList } from '@utils/eventAliases';
 import Pusher from 'pusher';
 
 import { EmitData, EventController, EventControllerInterface } from '../event.controller';
@@ -162,7 +163,7 @@ export class PusherController extends EventController implements EventController
     }
     if (local && instance && instance.enabled) {
       const pusherLocalEvents = instance.events;
-      if (Array.isArray(pusherLocalEvents) && pusherLocalEvents.includes(we)) {
+      if (isEventInList(pusherLocalEvents, we)) {
         if (enabledLog) {
           this.logger.log({
             local: `${origin}.sendData-Pusher`,
@@ -188,7 +189,7 @@ export class PusherController extends EventController implements EventController
     }
     if (this.pusherConfig.GLOBAL?.ENABLED) {
       const globalEvents = this.pusherConfig.EVENTS;
-      if (globalEvents[we]) {
+      if (isEventEnabled(globalEvents, we)) {
         if (enabledLog) {
           this.logger.log({
             local: `${origin}.sendData-Pusher-Global`,

@@ -4,6 +4,7 @@ import { WAMonitoringService } from '@api/services/monitor.service';
 import { wa } from '@api/types/wa.types';
 import { configService, Log, Webhook } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { isEventEnabled, isEventInList } from '@utils/eventAliases';
 // import { BadRequestException } from '@exceptions';
 import axios, { AxiosInstance } from 'axios';
 import * as jwt from 'jsonwebtoken';
@@ -103,7 +104,7 @@ export class WebhookController extends EventController implements EventControlle
     };
 
     if (local && instance?.enabled) {
-      if (Array.isArray(webhookLocal) && webhookLocal.includes(we)) {
+      if (isEventInList(webhookLocal, we)) {
         let baseURL: string;
 
         if (instance?.webhookByEvents) {
@@ -150,7 +151,7 @@ export class WebhookController extends EventController implements EventControlle
     }
 
     if (webhookConfig.GLOBAL?.ENABLED) {
-      if (webhookConfig.EVENTS[we]) {
+      if (isEventEnabled(webhookConfig.EVENTS, we)) {
         let globalURL = webhookConfig.GLOBAL.URL;
 
         if (webhookConfig.GLOBAL.WEBHOOK_BY_EVENTS) {
