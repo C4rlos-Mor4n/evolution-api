@@ -51,14 +51,18 @@ export abstract class RouterBroker {
     const body = request.body;
     const instance = request.params as unknown as InstanceDto;
 
+    // Exact route path WITHOUT the query string. originalUrl.includes() could be spoofed with
+    // `?x=/instance/fetchInstances&instanceName=victim`, re-opening the cross-instance bypass (#2435).
+    const routePath = ((request.baseUrl || '') + (request.path || '')).replace(/\/+$/, '');
+
     if (request?.query && Object.keys(request.query).length > 0) {
       // /instance/fetchInstances has no ":instanceName" in its path either: it is a lookup route
       // whose filter (instanceName or instanceId) legitimately arrives in the query string.
-      const queryProtectedFields = request.originalUrl.includes('/instance/fetchInstances') ? [] : undefined;
+      const queryProtectedFields = routePath === '/instance/fetchInstances' ? [] : undefined;
       Object.assign(instance, sanitizeUntrustedInput(request.query as Record<string, any>, queryProtectedFields));
     }
 
-    if (request.originalUrl.includes('/instance/create')) {
+    if (routePath === '/instance/create') {
       // /instance/create has no ":instanceName" in its path, so the name can only come from the
       // body and must be allowed through. instanceId stays protected: it is server-generated.
       Object.assign(instance, sanitizeUntrustedInput(body, ['instanceId']));
