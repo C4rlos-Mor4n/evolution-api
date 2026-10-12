@@ -620,7 +620,25 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  // Serializes socket creation: concurrent reconnect triggers (close events, /instance/connect, restart)
+  // reuse the in-flight creation instead of spawning parallel sockets that fight each other (upstream #2655).
+  private clientCreation: Promise<WASocket> | null = null;
+
   private async createClient(number?: string): Promise<WASocket> {
+    if (this.clientCreation) {
+      this.logger.warn('Socket creation already in progress, reusing it');
+      return this.clientCreation;
+    }
+
+    this.clientCreation = this.buildClient(number);
+    try {
+      return await this.clientCreation;
+    } finally {
+      this.clientCreation = null;
+    }
+  }
+
+  private async buildClient(number?: string): Promise<WASocket> {
     this.instance.authState = await this.defineAuthState();
 
     const session = this.configService.get<ConfigSessionPhone>('CONFIG_SESSION_PHONE');
@@ -741,6 +759,18 @@ export class BaileysStartupService extends ChannelStartupService {
     };
 
     this.endSession = false;
+
+    // Close the previous socket before creating a new one, otherwise both stay connected with the same
+    // credentials and WhatsApp keeps replacing one with the other (440). Its late connection.update events
+    // are ignored by the stale-socket guard in eventHandler (upstream #2656).
+    const previousClient = this.client;
+    if (previousClient) {
+      try {
+        previousClient.end(undefined);
+      } catch (error) {
+        this.logger.warn(`Failed to close previous socket: ${error?.message ?? String(error)}`);
+      }
+    }
 
     this.client = makeWASocket(socketConfig);
 
@@ -1929,7 +1959,8 @@ export class BaileysStartupService extends ChannelStartupService {
   };
 
   private eventHandler() {
-    this.client.ev.process(async (events) => {
+    const sock = this.client;
+    sock.ev.process(async (events) => {
       this.eventProcessingQueue = this.eventProcessingQueue.then(async () => {
         try {
           if (!this.endSession) {
@@ -1955,7 +1986,9 @@ export class BaileysStartupService extends ChannelStartupService {
               this.sendDataWebhook(Events.CALL, call);
             }
 
-            if (events['connection.update']) {
+            // Ignore connection updates from a socket that was already replaced, so closing it does not
+            // trigger yet another reconnect (close -> reconnect -> close loop).
+            if (events['connection.update'] && sock === this.client) {
               this.connectionUpdate(events['connection.update']);
             }
 
