@@ -60,7 +60,15 @@ async function bootstrap() {
       credentials: configService.get<Cors>('CORS').CREDENTIALS,
     }),
     urlencoded({ extended: true, limit: '136mb' }),
-    json({ limit: '136mb' }),
+    json({
+      limit: '136mb',
+      // Keep the raw bytes of Meta webhooks for X-Hub-Signature-256 verification (only for that route)
+      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+        if (req.originalUrl?.startsWith('/webhook/meta')) {
+          req.rawBody = buf;
+        }
+      },
+    }),
     compression(),
   );
 

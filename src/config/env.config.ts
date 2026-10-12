@@ -187,11 +187,15 @@ export type Websocket = {
   ALLOWED_HOSTS?: string;
 };
 
+export type WaBusinessSignatureMode = 'off' | 'log' | 'enforce';
+
 export type WaBusiness = {
   TOKEN_WEBHOOK: string;
   URL: string;
   VERSION: string;
   LANGUAGE: string;
+  APP_SECRETS: string[];
+  SIGNATURE_MODE: WaBusinessSignatureMode;
 };
 
 export type EventsWebhook = {
@@ -731,6 +735,18 @@ export class ConfigService {
         URL: process.env.WA_BUSINESS_URL || 'https://graph.facebook.com',
         VERSION: process.env.WA_BUSINESS_VERSION || 'v18.0',
         LANGUAGE: process.env.WA_BUSINESS_LANGUAGE || 'en',
+        // Comma-separated Meta App Secrets (one per Meta app sending webhooks to this server)
+        APP_SECRETS: (process.env.WA_BUSINESS_APP_SECRET || '')
+          .split(',')
+          .map((secret) => secret.trim())
+          .filter(Boolean),
+        // off: no check | log: verify and only log mismatches | enforce: reject with 401.
+        // Defaults to `log` when a secret is configured so the rollout cannot cause an inbound outage.
+        SIGNATURE_MODE: (['off', 'log', 'enforce'].includes(process.env.WA_BUSINESS_WEBHOOK_SIGNATURE_MODE)
+          ? process.env.WA_BUSINESS_WEBHOOK_SIGNATURE_MODE
+          : process.env.WA_BUSINESS_APP_SECRET
+            ? 'log'
+            : 'off') as WaBusinessSignatureMode,
       },
       LOG: {
         LEVEL:
