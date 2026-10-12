@@ -2211,7 +2211,7 @@ export class ChatwootService {
         }
 
         const originalMessage = await this.getConversationMessage(body.message);
-        let bodyMessage = originalMessage
+        const bodyMessage = originalMessage
           ? originalMessage
               .replaceAll(/\*((?!\s)([^\n*]+?)(?<!\s))\*/g, '**$1**')
               .replaceAll(/_((?!\s)([^\n_]+?)(?<!\s))_/g, '*$1*')
