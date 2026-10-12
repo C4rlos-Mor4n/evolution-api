@@ -296,6 +296,9 @@ export class BaileysStartupService extends ChannelStartupService {
     if (sessionExists) {
       await this.prismaRepository.session.delete({ where: { sessionId: this.instanceId } });
     }
+
+    // Reset the QR counter so a later /instance/connect does not hit QRCODE.LIMIT immediately (upstream #2560)
+    this.instance.qrcode = { count: 0 };
   }
 
   public async getProfileName() {
