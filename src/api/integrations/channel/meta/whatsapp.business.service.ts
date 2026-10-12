@@ -1489,6 +1489,18 @@ export class BusinessStartupService extends ChannelStartupService {
       throw new BadRequestException('Button texts cannot be repeated', 'Button IDs cannot be repeated.');
     }
 
+    // Cloud API CTA URL: exactly one url button, no mixing with reply buttons (they would be silently
+    // dropped), and Meta limits display_text to 20 characters.
+    const urlButtons = data.buttons.filter((button) => button.type === 'url' && button.url);
+    if (urlButtons.length > 0) {
+      if (data.buttons.length > 1) {
+        throw new BadRequestException('A url (CTA) button must be sent alone on WhatsApp Cloud API');
+      }
+      if ((urlButtons[0].displayText ?? '').length > 20) {
+        throw new BadRequestException('url (CTA) button displayText must be at most 20 characters');
+      }
+    }
+
     return await this.sendMessageWithTyping(
       data.number,
       {
