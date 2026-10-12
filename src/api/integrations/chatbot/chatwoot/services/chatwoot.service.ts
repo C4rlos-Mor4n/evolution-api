@@ -144,9 +144,9 @@ export class ChatwootService {
           status = 3,
           additional_attributes = COALESCE(additional_attributes, '{}'::jsonb) || $1::jsonb,
           updated_at = NOW()
-        WHERE id = $2
+        WHERE id = $2 AND account_id = $3
       `,
-      [JSON.stringify(metadata), message.chatwootMessageId],
+      [JSON.stringify(metadata), message.chatwootMessageId, this.provider?.accountId],
     );
 
     this.logger.warn(

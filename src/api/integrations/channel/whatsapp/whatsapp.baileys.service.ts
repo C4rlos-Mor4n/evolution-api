@@ -622,19 +622,36 @@ export class BaileysStartupService extends ChannelStartupService {
 
   // Serializes socket creation: concurrent reconnect triggers (close events, /instance/connect, restart)
   // reuse the in-flight creation instead of spawning parallel sockets that fight each other (upstream #2655).
-  private clientCreation: Promise<WASocket> | null = null;
+  private clientCreation: { promise: Promise<WASocket>; number?: string } | null = null;
+
+  private static readonly CLIENT_CREATION_TIMEOUT_MS = 60_000;
 
   private async createClient(number?: string): Promise<WASocket> {
-    if (this.clientCreation) {
+    // Reuse only an equivalent request: a pairing-code request (number) must not get a QR socket
+    if (this.clientCreation && this.clientCreation.number === number) {
       this.logger.warn('Socket creation already in progress, reusing it');
-      return this.clientCreation;
+      return this.clientCreation.promise;
     }
 
-    this.clientCreation = this.buildClient(number);
+    const creation = { promise: this.buildClient(number), number };
+    this.clientCreation = creation;
+
+    // A stalled creation (slow proxy/version lookup) must not block every later reconnect forever
+    let timer: NodeJS.Timeout;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('Socket creation timed out')),
+        BaileysStartupService.CLIENT_CREATION_TIMEOUT_MS,
+      );
+    });
+
     try {
-      return await this.clientCreation;
+      return await Promise.race([creation.promise, timeout]);
     } finally {
-      this.clientCreation = null;
+      clearTimeout(timer);
+      if (this.clientCreation === creation) {
+        this.clientCreation = null;
+      }
     }
   }
 
@@ -671,7 +688,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
       if (this.localProxy?.host?.includes('proxyscrape')) {
         try {
-          const response = await axios.get(this.localProxy?.host);
+          const response = await axios.get(this.localProxy?.host, { timeout: 15000 });
           const text = response.data;
           const proxyUrls = text.split('\r\n').filter(Boolean);
           const rand = Math.floor(Math.random() * Math.floor(proxyUrls.length));

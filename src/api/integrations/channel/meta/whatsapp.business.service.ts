@@ -134,7 +134,10 @@ export class BusinessStartupService extends ChannelStartupService {
       // Kept for compatibility only. The remoteJid of each message/status is derived from the event itself:
       // this field is shared by concurrent webhooks and was read after an await, so messages could be
       // attributed to another contact's chat.
-      this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses?.[0]?.recipient_id);
+      const eventJid = content.messages?.[0]?.from ?? content.statuses?.[0]?.recipient_id;
+      if (eventJid) {
+        this.phoneNumber = createJid(eventJid);
+      }
 
       await this.eventHandler(content);
     } catch (error) {
@@ -979,7 +982,7 @@ export class BusinessStartupService extends ChannelStartupService {
             {
               ...content,
               messages: [message],
-              contacts: contact ? [contact] : content.contacts,
+              contacts: contact ? [contact] : [],
               statuses: undefined,
             },
             database,

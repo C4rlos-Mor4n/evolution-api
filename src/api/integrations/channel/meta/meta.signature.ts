@@ -12,8 +12,13 @@ export function verifyMetaSignature(
   rawBody: Buffer | undefined,
   signatureHeader: string | string[] | undefined,
 ): MetaSignatureResult {
-  if (config.SIGNATURE_MODE === 'off' || config.APP_SECRETS.length === 0) {
+  if (config.SIGNATURE_MODE === 'off') {
     return 'skipped';
+  }
+
+  // enforce/log without any secret is a misconfiguration: never treat it as a valid signature
+  if (config.APP_SECRETS.length === 0) {
+    return config.SIGNATURE_MODE === 'enforce' ? 'invalid' : 'skipped';
   }
 
   const header = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;

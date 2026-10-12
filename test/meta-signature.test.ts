@@ -10,7 +10,11 @@ const sign = (secret: string) => 'sha256=' + createHmac('sha256', secret).update
 describe('verifyMetaSignature', () => {
   it('is skipped when off or no secret configured', () => {
     assert.equal(verifyMetaSignature({ APP_SECRETS: ['s'], SIGNATURE_MODE: 'off' }, body, sign('s')), 'skipped');
-    assert.equal(verifyMetaSignature({ APP_SECRETS: [], SIGNATURE_MODE: 'enforce' }, body, undefined), 'skipped');
+    assert.equal(verifyMetaSignature({ APP_SECRETS: [], SIGNATURE_MODE: 'log' }, body, undefined), 'skipped');
+  });
+
+  it('fails closed when enforce is set without any secret (misconfiguration)', () => {
+    assert.equal(verifyMetaSignature({ APP_SECRETS: [], SIGNATURE_MODE: 'enforce' }, body, sign('x')), 'invalid');
   });
 
   it('accepts a valid signature from any configured app secret', () => {
