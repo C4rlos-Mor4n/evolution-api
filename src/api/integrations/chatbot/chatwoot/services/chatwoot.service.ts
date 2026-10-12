@@ -2252,20 +2252,14 @@ export class ChatwootService {
         const isInteractiveButtonMessage = this.isInteractiveButtonMessage(body.messageType, body.message);
 
         if (!bodyMessage && !isMedia && !reactionMessage && !isInteractiveButtonMessage) {
-          // Degrade gracefully instead of silently dropping the conversation: any message type
-          // with no dedicated extractor above still gets a placeholder body, and the actual type
-          // is logged so it's discoverable instead of only visible by reconciling two databases.
-          const detectedType = Object.keys(body.message ?? {}).find((key) => body.message[key] !== undefined);
-
-          if (!detectedType) {
-            this.logger.warn('no body message found (empty message payload)');
-            return;
-          }
-
-          this.logger.warn(
-            `no content extractor for message type "${detectedType}" — creating conversation with a placeholder body instead of dropping it`,
+          // Keep the original behaviour (drop) for types without an extractor, but log the type so it is
+          // discoverable. The upstream placeholder fallback (#2666) was dropped: it posted a Portuguese text
+          // and could pick metadata keys such as messageContextInfo as the "type".
+          const detectedType = Object.keys(body.message ?? {}).find(
+            (key) => body.message[key] !== undefined && key !== 'messageContextInfo',
           );
-          bodyMessage = `[mensagem não suportada: ${detectedType}]`;
+          this.logger.warn(`no body message found (type: ${detectedType ?? 'empty'})`);
+          return;
         }
 
         const getConversation = await this.createConversation(instance, body);
