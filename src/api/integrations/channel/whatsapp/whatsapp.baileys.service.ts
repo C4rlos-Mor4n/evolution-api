@@ -1759,18 +1759,23 @@ export class BaileysStartupService extends ChannelStartupService {
 
           if (findMessage && update.status !== undefined) {
             if (key.fromMe && updateStatus === 'ERROR') {
-              await this.prismaRepository.message.update({
-                where: { id: findMessage.id },
-                data: { status: updateStatus },
-              });
-
-              if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
-                await this.chatwootService.markMessageAsFailed(findMessage, {
-                  status: updateStatus,
-                  code: update.messageStubParameters?.[0],
-                  keyId: key.id ?? undefined,
-                  remoteJid: key.remoteJid ?? undefined,
+              // Isolated so a DB/Chatwoot failure does not abort the remaining updates of this batch
+              try {
+                await this.prismaRepository.message.update({
+                  where: { id: findMessage.id },
+                  data: { status: updateStatus },
                 });
+
+                if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+                  await this.chatwootService.markMessageAsFailed(findMessage, {
+                    status: updateStatus,
+                    code: update.messageStubParameters?.[0],
+                    keyId: key.id ?? undefined,
+                    remoteJid: key.remoteJid ?? undefined,
+                  });
+                }
+              } catch (error) {
+                this.logger.error(['Failed to mark message as failed', key.id, error?.message]);
               }
             } else if (!key.fromMe && key.remoteJid && updateStatus !== findMessage.status) {
               readChatToUpdate[key.remoteJid] = true;
