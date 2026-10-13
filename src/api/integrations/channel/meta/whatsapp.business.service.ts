@@ -1,3 +1,4 @@
+import { CloudCallAction, CloudCallActionDto, CloudCallSettingsDto } from '@api/dto/call.dto';
 import { NumberBusiness, ReadMessageDto } from '@api/dto/chat.dto';
 import {
   ContactMessage,
@@ -995,7 +996,12 @@ export class BusinessStartupService extends ChannelStartupService {
         await this.messageHandle({ ...content, messages: undefined }, database, settings);
       }
 
-      if (!content.messages?.length && !content.statuses) {
+      // Cloud API Calling webhooks (field "calls"): relayed as CALL events for the client to answer
+      if (Array.isArray(content.calls) && content.calls.length > 0) {
+        this.cloudCallsHandle(content);
+      }
+
+      if (!content.messages?.length && !content.statuses && !content.calls?.length) {
         this.logger.warn('No se encontraron mensajes ni estados en el contenido recibido');
       }
     } catch (error) {
@@ -1791,6 +1797,130 @@ export class BusinessStartupService extends ChannelStartupService {
   public async whatsappNumber() {
     throw new BadRequestException('Method not available on WhatsApp Business API');
   }
+  // ---------------------------------------------------------------------------------------------
+  // WhatsApp Cloud API Calling (user-initiated calls). Evolution only relays signaling: Meta sends
+  // the caller's SDP offer in the "calls" webhook, the client (agent's browser) builds the WebRTC
+  // SDP answer and sends it back through preAccept/accept; media flows peer to peer.
+  // ---------------------------------------------------------------------------------------------
+
+  // Normalizes each entry of value.calls into a CALL event
+  private cloudCallsHandle(content: any) {
+    for (const call of content.calls) {
+      try {
+        if (!call?.id) continue;
+
+        const contact =
+          content.contacts?.find((item: any) => item?.wa_id && item.wa_id === call.from) ?? content.contacts?.[0];
+
+        const payload: Record<string, unknown> = {
+          provider: 'cloud_api',
+          callId: call.id,
+          event: call.event,
+          direction: call.direction ?? 'USER_INITIATED',
+          from: call.from,
+          fromJid: call.from ? createJid(call.from) : undefined,
+          fromUserId: call.from_user_id,
+          to: call.to,
+          pushName: contact?.profile?.name,
+          timestamp: call.timestamp ? Number(call.timestamp) : undefined,
+          instanceId: this.instanceId,
+        };
+
+        if (call.session) {
+          payload.sdpType = call.session.sdp_type;
+          payload.sdp = call.session.sdp;
+        }
+
+        if (call.event === 'terminate') {
+          Object.assign(payload, {
+            status: call.status,
+            startTime: call.start_time ? Number(call.start_time) : undefined,
+            endTime: call.end_time ? Number(call.end_time) : undefined,
+            duration: call.duration !== undefined ? Number(call.duration) : undefined,
+            bizOpaqueCallbackData: call.biz_opaque_callback_data,
+            errors: Array.isArray(call.errors) && call.errors.length > 0 ? call.errors : undefined,
+          });
+        }
+
+        this.logger.log(`Cloud API call ${call.event ?? 'event'}: ${call.id}`);
+        this.sendDataWebhook(Events.CALL, payload);
+      } catch (error) {
+        this.logger.error(['Error processing Cloud API call webhook', call?.id, error?.message]);
+      }
+    }
+  }
+
+  // Meta error bodies come back from post() as the Graph error object (see post()); normalize them
+  private metaErrorMessage(result: any) {
+    return (
+      result?.error?.message || result?.error_user_msg || result?.message || JSON.stringify(result ?? 'Unknown error')
+    );
+  }
+
+  public async cloudCallAction(action: CloudCallAction, data: CloudCallActionDto) {
+    if (!this.token || !this.number) {
+      throw new BadRequestException('Instance token (Meta Access Token) or number (Phone Number ID) not configured');
+    }
+
+    const content: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      call_id: data.callId,
+      action,
+    };
+
+    if (action === 'pre_accept' || action === 'accept') {
+      if (!data.sdp) {
+        throw new BadRequestException('sdp (WebRTC SDP answer) is required for preAccept/accept');
+      }
+      content.session = { sdp_type: 'answer', sdp: data.sdp };
+    }
+
+    if (action === 'accept' && data.bizOpaqueCallbackData) {
+      content.biz_opaque_callback_data = data.bizOpaqueCallbackData;
+    }
+
+    const result: any = await this.post(content, 'calls');
+
+    if (!result || result.success !== true) {
+      const message = this.metaErrorMessage(result);
+      this.logger.error(`Cloud API call ${action} failed for ${data.callId}: ${message}`);
+      throw new BadRequestException(`Failed to ${action} call: ${message}`);
+    }
+
+    return { success: true, callId: data.callId, action };
+  }
+
+  public async getCloudCallSettings() {
+    if (!this.token || !this.number) {
+      throw new BadRequestException('Instance token (Meta Access Token) or number (Phone Number ID) not configured');
+    }
+
+    const { URL, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
+    try {
+      const { data } = await axios.get(`${URL}/${VERSION}/${this.number}/settings`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+      });
+      return { calling: data?.calling ?? null, restrictions: data?.calling?.restrictions ?? data?.restrictions };
+    } catch (error) {
+      const message = this.metaErrorMessage(error?.response?.data?.error ?? { message: error?.message });
+      throw new BadRequestException(`Failed to read call settings: ${message}`);
+    }
+  }
+
+  public async setCloudCallSettings(data: CloudCallSettingsDto) {
+    if (!this.token || !this.number) {
+      throw new BadRequestException('Instance token (Meta Access Token) or number (Phone Number ID) not configured');
+    }
+
+    const result: any = await this.post({ calling: data.calling }, 'settings');
+
+    if (!result || result.success !== true) {
+      throw new BadRequestException(`Failed to update call settings: ${this.metaErrorMessage(result)}`);
+    }
+
+    return { success: true };
+  }
+
   public async markMessageAsRead(data: ReadMessageDto) {
     try {
       if (!data?.readMessages || data.readMessages.length === 0) {
