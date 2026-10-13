@@ -4,6 +4,14 @@ Disponible solo en instancias `WHATSAPP-BUSINESS`. Es la API **oficial** de Meta
 
 Alcance actual: **llamadas entrantes** (el cliente llama a la empresa) y configuración de llamadas del número.
 
+Imagen (Docker Hub, pública, linux/amd64), tag git `2.3.7-meta.4-rc1` → `b4d14fcf`:
+
+```
+docker.io/c4rlosmor4n/evolution-api:2.3.7-meta.4-rc1@sha256:abf294b1186e7d5118c0816ec8319feb9b5225ab407cb1d8628c2651a687b691
+```
+
+Incluye todo lo de `2.3.7-meta.3-rc1` (parches Meta y PRs de la comunidad) más las llamadas.
+
 ## Cómo funciona
 
 Evolution solo **relaya la señalización**. El audio viaja por WebRTC directamente entre WhatsApp y el navegador del agente, así que no hace falta un servidor de medios.
