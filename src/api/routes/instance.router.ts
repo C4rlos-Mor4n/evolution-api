@@ -1,8 +1,10 @@
 import { RouterBroker } from '@api/abstract/abstract.router';
-import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { InstanceDto, MetaCredentialsDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { globalApiKeyGuard } from '@api/guards/global-apikey.guard';
+import { instanceExistsGuard } from '@api/guards/instance.guard';
 import { instanceController } from '@api/server.module';
 import { ConfigService } from '@config/env.config';
-import { instanceSchema, presenceOnlySchema } from '@validate/validate.schema';
+import { instanceSchema, metaCredentialsSchema, presenceOnlySchema } from '@validate/validate.schema';
 import { RequestHandler, Router } from 'express';
 
 import { HttpStatus } from './index.router';
@@ -23,6 +25,18 @@ export class InstanceRouter extends RouterBroker {
         });
 
         return res.status(HttpStatus.CREATED).json(response);
+      })
+      // Rotate the Meta access token. Global api key ONLY (not the instance token), checked before the
+      // existence check so the route cannot be used to probe instance names.
+      .patch(this.routerPath('meta-credentials'), globalApiKeyGuard, instanceExistsGuard, async (req, res) => {
+        const response = await this.dataValidate<MetaCredentialsDto>({
+          request: req,
+          schema: metaCredentialsSchema,
+          ClassRef: MetaCredentialsDto,
+          execute: (instance, data) => instanceController.updateMetaCredentials(instance, data),
+        });
+
+        return res.status(HttpStatus.OK).json(response);
       })
       .post(this.routerPath('restart'), ...guards, async (req, res) => {
         const response = await this.dataValidate<InstanceDto>({

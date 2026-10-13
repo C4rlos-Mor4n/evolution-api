@@ -231,3 +231,14 @@ export const presenceOnlySchema: JSONSchema7 = {
   },
   required: ['presence'],
 };
+
+// Instance.token is VARCHAR(255): longer tokens could not be stored
+export const metaCredentialsSchema: JSONSchema7 = {
+  $id: v4(),
+  type: 'object',
+  properties: {
+    accessToken: { type: 'string', minLength: 20, maxLength: 255, pattern: '^\\S+$' },
+  },
+  required: ['accessToken'],
+  additionalProperties: false,
+};

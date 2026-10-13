@@ -57,3 +57,8 @@ export class InstanceDto extends IntegrationDto {
 export class SetPresenceDto {
   presence: WAPresence;
 }
+
+export class MetaCredentialsDto {
+  // New Meta (WhatsApp Cloud API) access token. Never logged or returned.
+  accessToken: string;
+}

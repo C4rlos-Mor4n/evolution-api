@@ -1,4 +1,5 @@
-import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { InstanceDto, MetaCredentialsDto, SetPresenceDto } from '@api/dto/instance.dto';
+import { validateMetaAccessToken } from '@api/integrations/channel/meta/meta.credentials';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
@@ -9,7 +10,12 @@ import { SettingsService } from '@api/services/settings.service';
 import { Events, Integration, wa } from '@api/types/wa.types';
 import { Auth, Chatwoot, ConfigService, HttpServer, WaBusiness } from '@config/env.config';
 import { Logger } from '@config/logger.config';
-import { BadRequestException, InternalServerErrorException, UnauthorizedException } from '@exceptions';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@exceptions';
 import { delay } from 'baileys';
 import { isArray, isURL } from 'class-validator';
 import EventEmitter2 from 'eventemitter2';
@@ -491,5 +497,49 @@ export class InstanceController {
 
     this.eventEmitter.emit('remove.instance', instanceName, 'inner');
     return { status: 'SUCCESS', error: false, response: { message: 'Instance deleted' } };
+  }
+
+  /**
+   * Rotates the Meta access token of a WHATSAPP-BUSINESS instance (global api key only, see route).
+   * The new token is validated against the Graph API for this phone number before anything changes;
+   * on any failure the previous token stays in place. The token is never logged nor returned.
+   *
+   * Note: for WHATSAPP-BUSINESS instances Instance.token is also the instance api key, so after a
+   * rotation that instance must be called with the new token (or with the global key).
+   */
+  public async updateMetaCredentials({ instanceName }: InstanceDto, data: MetaCredentialsDto) {
+    const instance = await this.prismaRepository.instance.findUnique({ where: { name: instanceName } });
+    if (!instance) {
+      throw new NotFoundException(`The "${instanceName}" instance does not exist`);
+    }
+    if (instance.integration !== Integration.WHATSAPP_BUSINESS) {
+      throw new BadRequestException('Meta credentials can only be updated on WHATSAPP-BUSINESS instances');
+    }
+    if (!instance.number) {
+      throw new BadRequestException('The instance has no Meta phone number id (number) configured');
+    }
+
+    const accessToken = data.accessToken.trim();
+    await validateMetaAccessToken(this.configService.get<WaBusiness>('WA_BUSINESS'), instance.number, accessToken);
+
+    const previousToken = instance.token;
+    await this.prismaRepository.instance.update({ where: { id: instance.id }, data: { token: accessToken } });
+
+    const runtime = this.waMonitor.waInstances[instanceName];
+    try {
+      if (runtime) {
+        runtime.token = accessToken;
+      }
+    } catch (error) {
+      // Keep DB and memory consistent: restore the previous token
+      await this.prismaRepository.instance.update({ where: { id: instance.id }, data: { token: previousToken } });
+      if (runtime) runtime.token = previousToken;
+      this.logger.error(`Meta credentials rotation rolled back for instance "${instanceName}": ${error?.message}`);
+      throw new InternalServerErrorException('Could not apply the new Meta credentials; previous token kept');
+    }
+
+    this.logger.info(`Meta credentials rotated for instance "${instanceName}"`);
+
+    return { success: true, instanceName, credentialsUpdated: true };
   }
 }
