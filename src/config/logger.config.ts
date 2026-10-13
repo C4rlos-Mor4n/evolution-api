@@ -74,7 +74,40 @@ export class Logger {
     this.instance = value;
   }
 
+  // Call SDPs (WhatsApp Cloud API Calling) carry ICE credentials, DTLS fingerprints and IP candidates.
+  // Event controllers log whole webhook payloads (LOG_LEVEL WEBHOOKS), so redact them here, once.
+  // Returns the same reference when nothing had to be redacted.
+  private static redactSdp(value: any, depth = 0): any {
+    if (!value || typeof value !== 'object' || depth > 5) return value;
+    // Buffers/typed arrays (media), errors and dates never contain an "sdp" key: do not walk them
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Error || value instanceof Date) {
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      let changed = false;
+      const out = value.map((item) => {
+        const redacted = Logger.redactSdp(item, depth + 1);
+        if (redacted !== item) changed = true;
+        return redacted;
+      });
+      return changed ? out : value;
+    }
+
+    let copy: Record<string, any> | null = null;
+    for (const key of Object.keys(value)) {
+      const current = value[key];
+      const next = key === 'sdp' && typeof current === 'string' ? '[redacted]' : Logger.redactSdp(current, depth + 1);
+      if (next !== current) {
+        copy = copy ?? { ...value };
+        copy[key] = next;
+      }
+    }
+    return copy ?? value;
+  }
+
   private console(value: any, type: Type) {
+    value = Logger.redactSdp(value);
     const types: Type[] = [];
 
     this.configService.get<Log>('LOG').LEVEL.forEach((level) => types.push(Type[level]));
