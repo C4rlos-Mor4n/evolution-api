@@ -4,7 +4,9 @@ Build derivada, **no es una release oficial upstream**.
 
 - Base: `krionix/meta-2.3.7` (tag upstream `2.3.7` + parche Meta, ver `KRIONIX_META_PATCH.md`)
 - Rama: `krionix/community-2.3.7`
-- Imagen candidata (local, no publicada): `evolution-api:2.3.7-meta.3-rc1`
+- Imagen candidata publicada (Docker Hub, pública, linux/amd64), construida desde el commit `c55242fa`:
+  `docker.io/c4rlosmor4n/evolution-api:2.3.7-meta.3-rc1@sha256:45e274d881b22efc99941da7626baf32537f44d2594b853a6e7197c84ea1be64`
+  Es un **release candidate**: usarla en demo antes de producción.
 - Sin cambios en `prisma/`, migraciones, `package.json` ni `package-lock.json`.
 - Revisión: triage de los 82 PRs abiertos de upstream; revisión independiente del diff final (sus hallazgos están corregidos).
 
