@@ -4,6 +4,7 @@ import '@api/server.module';
 import { CallController } from '@api/controllers/call.controller';
 import { BusinessStartupService } from '@api/integrations/channel/meta/whatsapp.business.service';
 import { Events } from '@api/types/wa.types';
+import axios from 'axios';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
@@ -22,7 +23,8 @@ function buildService(postResult: any = { messaging_product: 'whatsapp', success
   Object.defineProperty(svc, 'token', { value: 'test-token' });
   Object.defineProperty(svc, 'number', { value: '123' });
   svc.sendDataWebhook = (event: string, data: any) => webhooks.push({ event, data });
-  svc.post = async (content: any, params: string) => {
+  svc.configService = { get: () => ({ URL: 'https://graph.test', VERSION: 'v23.0' }) };
+  svc.callingGraphRequest = async (_method: string, params: string, content: any) => {
     posts.push({ content, params });
     return postResult;
   };
@@ -92,7 +94,6 @@ describe('Cloud API calls webhook -> CALL event', () => {
   it('eventHandler routes calls without touching messages/statuses', async () => {
     const t = buildService();
     t.svc.findSettings = async () => ({});
-    t.svc.configService = { get: () => ({}) };
     let messageHandleCalls = 0;
     t.svc.messageHandle = async () => {
       messageHandleCalls++;
@@ -169,5 +170,77 @@ describe('CallController', () => {
       controller.cloudCallAction({ instanceName: 'baileys' } as any, 'accept', { callId: 'x', sdp: 'y' }),
       (e: any) => e.status === 400 && /WHATSAPP-BUSINESS/.test(JSON.stringify(e.message)),
     );
+  });
+});
+
+describe('Cloud API calling Graph request (timeout and error mapping)', () => {
+  const realRequest = axios.request;
+  const withAxios = async (impl: any, fn: (svc: any, seen: any[]) => Promise<void>) => {
+    const seen: any[] = [];
+    (axios as any).request = async (cfg: any) => {
+      seen.push(cfg);
+      return impl(cfg);
+    };
+    try {
+      const svc: any = Object.create(BusinessStartupService.prototype);
+      Object.defineProperty(svc, 'token', { value: 'test-token' });
+      Object.defineProperty(svc, 'number', { value: '123' });
+      svc.configService = { get: () => ({ URL: 'https://graph.test', VERSION: 'v23.0' }) };
+      await fn(svc, seen);
+    } finally {
+      (axios as any).request = realRequest;
+    }
+  };
+
+  it('posts to <URL>/<VERSION>/<number>/calls with a timeout', async () => {
+    await withAxios(
+      () => ({ data: { success: true } }),
+      async (svc, seen) => {
+        await svc.callingGraphRequest('POST', 'calls', { a: 1 });
+        assert.equal(seen[0].url, 'https://graph.test/v23.0/123/calls');
+        assert.equal(seen[0].timeout, 15000);
+        assert.equal(seen[0].headers.Authorization, 'Bearer test-token');
+      },
+    );
+  });
+
+  it('maps Meta 4xx to 400, 5xx and timeouts to 500', async () => {
+    const fail = (response: any, message = 'boom') => () => {
+      throw Object.assign(new Error(message), { response });
+    };
+    await withAxios(fail({ status: 401, data: { error: { message: 'Invalid OAuth access token', code: 190 } } }), (svc) =>
+      assert.rejects(
+        svc.callingGraphRequest('POST', 'calls', {}),
+        (e: any) => e.status === 400 && /HTTP 401, code 190/.test(JSON.stringify(e.message)),
+      ),
+    );
+    await withAxios(fail({ status: 503, data: {} }), (svc) =>
+      assert.rejects(svc.callingGraphRequest('POST', 'calls', {}), (e: any) => e.status === 500),
+    );
+    await withAxios(fail(undefined, 'timeout of 15000ms exceeded'), (svc) =>
+      assert.rejects(
+        svc.callingGraphRequest('POST', 'calls', {}),
+        (e: any) => e.status === 500 && /timeout of 15000ms/.test(JSON.stringify(e.message)),
+      ),
+    );
+  });
+});
+
+describe('Cloud API calls privacy', () => {
+  it('never logs the SDP of a call webhook and does not borrow another contact name', async () => {
+    const t = buildService();
+    const logged: string[] = [];
+    t.svc.logger = { error: () => {}, warn: () => {}, verbose: () => {}, log: (v: any) => logged.push(String(v)) };
+    t.svc.findSettings = async () => ({});
+    t.svc.messageHandle = async () => {};
+    await t.svc.eventHandler({
+      metadata: { phone_number_id: '123' },
+      contacts: [{ profile: { name: 'Otro' }, wa_id: '593900000099' }],
+      calls: [{ id: 'wacid.P', from: '593900000001', event: 'connect', session: { sdp_type: 'offer', sdp: SDP_OFFER } }],
+    });
+    assert.ok(!logged.some((l) => l.includes('UDP/TLS/RTP/SAVPF')), 'SDP leaked to logs');
+    assert.ok(logged.some((l) => l.includes('[redacted]')));
+    assert.equal(calls(t.webhooks)[0].pushName, undefined);
+    assert.equal(calls(t.webhooks)[0].sdp, SDP_OFFER, 'the webhook itself still carries the SDP');
   });
 });

@@ -947,7 +947,10 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       // Registro para depuración
       this.logger.log('Contenido recibido en eventHandler:');
-      this.logger.log(JSON.stringify(content, null, 2));
+      // Call SDPs carry ICE credentials, DTLS fingerprints and IP candidates: never log them
+      this.logger.log(
+        JSON.stringify(content, (key, value) => (key === 'sdp' && typeof value === 'string' ? '[redacted]' : value), 2),
+      );
 
       const database = this.configService.get<Database>('DATABASE');
       const settings = await this.findSettings();
@@ -1809,8 +1812,8 @@ export class BusinessStartupService extends ChannelStartupService {
       try {
         if (!call?.id) continue;
 
-        const contact =
-          content.contacts?.find((item: any) => item?.wa_id && item.wa_id === call.from) ?? content.contacts?.[0];
+        // Only the caller's own contact entry: never take the name of another contact of the batch
+        const contact = content.contacts?.find((item: any) => item?.wa_id && item.wa_id === call.from);
 
         const payload: Record<string, unknown> = {
           provider: 'cloud_api',
@@ -1850,11 +1853,37 @@ export class BusinessStartupService extends ChannelStartupService {
     }
   }
 
-  // Meta error bodies come back from post() as the Graph error object (see post()); normalize them
-  private metaErrorMessage(result: any) {
-    return (
-      result?.error?.message || result?.error_user_msg || result?.message || JSON.stringify(result ?? 'Unknown error')
-    );
+  // Graph API request for calling endpoints: bounded (the caller hangs up after ~30-60s without an
+  // answer) and with errors that tell Meta-side failures apart from bad input.
+  private static readonly CALLING_TIMEOUT_MS = 15_000;
+
+  private async callingGraphRequest(method: 'GET' | 'POST', path: string, body?: unknown) {
+    const { URL, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
+    try {
+      const { data } = await axios.request({
+        method,
+        url: `${URL}/${VERSION}/${this.number}/${path}`,
+        data: body,
+        timeout: BusinessStartupService.CALLING_TIMEOUT_MS,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
+      });
+      return data;
+    } catch (error) {
+      const status: number | undefined = error?.response?.status;
+      const metaError = error?.response?.data?.error;
+      const detail = metaError?.message || metaError?.error_user_msg || error?.message || 'unknown error';
+
+      if (!error?.response) {
+        // Timeout / network: not the client's fault
+        throw new InternalServerErrorException(`Meta Graph API unreachable (${path}): ${detail}`);
+      }
+      if (status >= 500) {
+        throw new InternalServerErrorException(`Meta Graph API error ${status} (${path}): ${detail}`);
+      }
+      // 4xx from Meta: invalid call_id/SDP, expired or unauthorized token, calling disabled...
+      const code = metaError?.code ? `, code ${metaError.code}` : '';
+      throw new BadRequestException(`Meta rejected ${path} (HTTP ${status}${code}): ${detail}`);
+    }
   }
 
   public async cloudCallAction(action: CloudCallAction, data: CloudCallActionDto) {
@@ -1879,12 +1908,16 @@ export class BusinessStartupService extends ChannelStartupService {
       content.biz_opaque_callback_data = data.bizOpaqueCallbackData;
     }
 
-    const result: any = await this.post(content, 'calls');
-
-    if (!result || result.success !== true) {
-      const message = this.metaErrorMessage(result);
-      this.logger.error(`Cloud API call ${action} failed for ${data.callId}: ${message}`);
-      throw new BadRequestException(`Failed to ${action} call: ${message}`);
+    try {
+      const result: any = await this.callingGraphRequest('POST', 'calls', content);
+      if (result?.success !== true) {
+        throw new BadRequestException(`Meta did not confirm ${action}: ${JSON.stringify(result ?? null)}`);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Cloud API call ${action} failed for ${data.callId}: ${JSON.stringify(error?.message ?? error)}`,
+      );
+      throw error;
     }
 
     return { success: true, callId: data.callId, action };
@@ -1895,16 +1928,8 @@ export class BusinessStartupService extends ChannelStartupService {
       throw new BadRequestException('Instance token (Meta Access Token) or number (Phone Number ID) not configured');
     }
 
-    const { URL, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
-    try {
-      const { data } = await axios.get(`${URL}/${VERSION}/${this.number}/settings`, {
-        headers: { Authorization: `Bearer ${this.token}` },
-      });
-      return { calling: data?.calling ?? null, restrictions: data?.calling?.restrictions ?? data?.restrictions };
-    } catch (error) {
-      const message = this.metaErrorMessage(error?.response?.data?.error ?? { message: error?.message });
-      throw new BadRequestException(`Failed to read call settings: ${message}`);
-    }
+    const data: any = await this.callingGraphRequest('GET', 'settings');
+    return { calling: data?.calling ?? null, restrictions: data?.calling?.restrictions ?? data?.restrictions };
   }
 
   public async setCloudCallSettings(data: CloudCallSettingsDto) {
@@ -1912,10 +1937,10 @@ export class BusinessStartupService extends ChannelStartupService {
       throw new BadRequestException('Instance token (Meta Access Token) or number (Phone Number ID) not configured');
     }
 
-    const result: any = await this.post({ calling: data.calling }, 'settings');
+    const result: any = await this.callingGraphRequest('POST', 'settings', { calling: data.calling });
 
-    if (!result || result.success !== true) {
-      throw new BadRequestException(`Failed to update call settings: ${this.metaErrorMessage(result)}`);
+    if (result?.success !== true) {
+      throw new BadRequestException(`Meta did not confirm the call settings update: ${JSON.stringify(result ?? null)}`);
     }
 
     return { success: true };
