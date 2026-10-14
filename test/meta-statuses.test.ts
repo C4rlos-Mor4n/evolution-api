@@ -341,3 +341,127 @@ describe('Meta Cloud API concurrency and batches (community port)', () => {
     assert.equal(t.updates[0].errors, undefined, 'errors are not persisted (no column)');
   });
 });
+
+// KRIONIX Phase 2A (Nix360 envía directo por Graph): los wamid de esos envíos NO existen en la
+// tabla Message de Evolution. Sus estados deben llegar igual a Nix360 (que empareja por keyId),
+// sin crear mensajes ficticios y sin cortar el lote. Casos A–G del plan de migración.
+describe('Meta Direct outbound: statuses of wamids unknown to Evolution', () => {
+  const batch = (statuses: any[]) => ({ metadata: { phone_number_id: PHONE_NUMBER_ID }, statuses });
+
+  it('A: known wamid keeps the current behaviour (emit with messageId + persist MessageUpdate)', async () => {
+    const t = buildService();
+    await t.handle(batch([{ id: 'wamid.KNOWN', status: 'delivered', recipient_id: '593999999999' }]));
+    const [update] = statusUpdates(t.webhooks);
+    assert.equal(update.keyId, 'wamid.KNOWN');
+    assert.equal(update.messageId, 'db-wamid.KNOWN');
+    assert.equal(update.status, 'DELIVERED');
+    assert.deepEqual(
+      t.updates.map((u) => [u.keyId, u.status]),
+      [['wamid.KNOWN', 'DELIVERED']],
+    );
+  });
+
+  it('B: unknown wamid emits MESSAGES_UPDATE (keyId, status, remoteJid) without persisting or faking a Message', async () => {
+    const t = buildService();
+    let messageCreates = 0;
+    t.svc.prismaRepository.message.create = async () => {
+      messageCreates += 1;
+    };
+    await t.handle(batch([{ id: 'wamid.DIRECT', status: 'sent', recipient_id: '593999999999', timestamp: '1700000000' }]));
+    const updates = statusUpdates(t.webhooks);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].keyId, 'wamid.DIRECT');
+    assert.equal(updates[0].status, 'SENT');
+    assert.equal(updates[0].remoteJid, '593999999999@s.whatsapp.net');
+    assert.equal(updates[0].fromMe, true);
+    assert.equal(updates[0].messageId, undefined);
+    assert.deepEqual(t.updates, [], 'MessageUpdate has a FK to Message: unknown wamids are not persisted');
+    assert.equal(messageCreates, 0, 'no fake Message rows');
+  });
+
+  it('C: unknown + known in one batch: both are processed', async () => {
+    const t = buildService();
+    await t.handle(
+      batch([
+        { id: 'wamid.DIRECT', status: 'delivered' },
+        { id: 'wamid.KNOWN', status: 'delivered' },
+      ]),
+    );
+    assert.deepEqual(
+      statusUpdates(t.webhooks).map((u) => u.keyId),
+      ['wamid.DIRECT', 'wamid.KNOWN'],
+    );
+  });
+
+  it('D: known + unknown + known: the unknown one never stops the batch', async () => {
+    const t = buildService();
+    await t.handle(
+      batch([
+        { id: 'wamid.KNOWN', status: 'read' },
+        { id: 'wamid.DIRECT', status: 'read' },
+        { id: 'wamid.STATUS1', status: 'read' },
+      ]),
+    );
+    assert.deepEqual(
+      statusUpdates(t.webhooks).map((u) => [u.keyId, u.status]),
+      [
+        ['wamid.KNOWN', 'READ'],
+        ['wamid.DIRECT', 'READ'],
+        ['wamid.STATUS1', 'READ'],
+      ],
+    );
+    assert.deepEqual(
+      t.updates.map((u) => u.keyId),
+      ['wamid.KNOWN', 'wamid.STATUS1'],
+    );
+  });
+
+  it('E: sent/delivered/read/failed map the same for unknown wamids; FAILED keeps Meta errors', async () => {
+    const t = buildService();
+    for (const status of ['sent', 'delivered', 'read']) {
+      await t.handle(batch([{ id: 'wamid.DIRECT', status, recipient_id: '593999999999' }]));
+    }
+    await t.handle(
+      batch([
+        {
+          id: 'wamid.DIRECT_FAIL',
+          status: 'failed',
+          recipient_id: '593999999999',
+          errors: [{ code: 131026, title: 'Message undeliverable' }],
+        },
+      ]),
+    );
+    const updates = statusUpdates(t.webhooks);
+    assert.deepEqual(
+      updates.map((u) => u.status),
+      ['SENT', 'DELIVERED', 'READ', 'FAILED'],
+    );
+    assert.equal(updates[3].keyId, 'wamid.DIRECT_FAIL');
+    assert.equal(updates[3].errors?.[0]?.code, 131026);
+  });
+
+  it('F: a known wamid emits exactly one MESSAGES_UPDATE per status (no duplicate webhooks)', async () => {
+    const t = buildService();
+    await t.handle(batch([{ id: 'wamid.KNOWN', status: 'delivered' }]));
+    await t.handle(batch([{ id: 'wamid.DIRECT', status: 'delivered' }]));
+    const updates = statusUpdates(t.webhooks);
+    assert.equal(updates.filter((u) => u.keyId === 'wamid.KNOWN').length, 1);
+    assert.equal(updates.filter((u) => u.keyId === 'wamid.DIRECT').length, 1);
+  });
+
+  it('G: statuses do not touch MESSAGES_UPSERT and CALL events are still relayed in the same webhook', async () => {
+    const t = buildService();
+    t.svc.findSettings = async () => ({});
+    await t.svc.eventHandler({
+      metadata: { phone_number_id: PHONE_NUMBER_ID },
+      statuses: [{ id: 'wamid.DIRECT', status: 'delivered', recipient_id: '593999999999' }],
+      calls: [{ id: 'wacid.TEST', event: 'connect', from: '593999999999', direction: 'USER_INITIATED' }],
+    });
+    const events = t.webhooks.map((w) => w.event);
+    assert.equal(events.filter((e) => e === Events.MESSAGES_UPDATE).length, 1);
+    assert.equal(events.filter((e) => e === Events.CALL).length, 1);
+    assert.equal(events.filter((e) => e === Events.MESSAGES_UPSERT).length, 0);
+    const call = t.webhooks.find((w) => w.event === Events.CALL)!.data;
+    assert.equal(call.callId, 'wacid.TEST');
+  });
+});
